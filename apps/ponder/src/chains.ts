@@ -56,12 +56,52 @@ const tiers = {
 
 type Tiers = typeof tiers;
 
+/**
+ * Parse chain selector string into array of chain names
+ * Supports:
+ * - Tier: "1", "2", "3", "4", "all"
+ * - Single chain: "mainnet"
+ * - Multiple chains: "mainnet,base,arbitrum"
+ * - Mixed: "1,optimism" (tier 1 + optimism)
+ */
+export function parseChainSelector(selector: string): ChainName[] {
+  const parts = selector.split(",").map((s) => s.trim());
+  const result = new Set<ChainName>();
+
+  for (const part of parts) {
+    if (part in tiers) {
+      // It's a tier
+      const tierChains = tiers[part as keyof Tiers];
+      for (const chain of tierChains) {
+        result.add(chain as ChainName);
+      }
+    } else if (part in chains) {
+      // It's a single chain name
+      result.add(part as ChainName);
+    } else {
+      throw new Error(
+        `Invalid chain selector: "${part}". Must be a tier (1, 2, 3, 4, all) or chain name (${Object.keys(chains).join(", ")})`,
+      );
+    }
+  }
+
+  return [...result];
+}
+
 export function getChainNames<K extends keyof Tiers>(tier: K): Tiers[K] {
   return tiers[tier];
 }
 
-export function getChains<K extends keyof Tiers>(tier: K): PickFrom<typeof chains, Tiers[K]> {
-  return pick(chains, tiers[tier]);
+export function getChains<K extends keyof Tiers>(tier: K): PickFrom<typeof chains, Tiers[K]>;
+export function getChains(selector: string): PickFrom<typeof chains, ChainName[]>;
+export function getChains(
+  selectorOrTier: string | keyof Tiers,
+): PickFrom<typeof chains, ChainName[]> {
+  const chainNames =
+    selectorOrTier in tiers
+      ? tiers[selectorOrTier as keyof Tiers]
+      : parseChainSelector(selectorOrTier);
+  return pick(chains, chainNames);
 }
 
 export function getPartialContract<
@@ -70,9 +110,21 @@ export function getPartialContract<
 >(
   contract: Contract,
   tier: K,
-): Omit<Contract, "chain"> & { chain: PickFrom<Contract["chain"], Tiers[K]> } {
+): Omit<Contract, "chain"> & { chain: PickFrom<Contract["chain"], Tiers[K]> };
+export function getPartialContract<Contract extends PonderContract<keyof typeof chains>>(
+  contract: Contract,
+  selector: string,
+): Omit<Contract, "chain"> & { chain: PickFrom<Contract["chain"], ChainName[]> };
+export function getPartialContract<Contract extends PonderContract<keyof typeof chains>>(
+  contract: Contract,
+  selectorOrTier: string | keyof Tiers,
+): Omit<Contract, "chain"> & { chain: PickFrom<Contract["chain"], ChainName[]> } {
+  const chainNames =
+    selectorOrTier in tiers
+      ? tiers[selectorOrTier as keyof Tiers]
+      : parseChainSelector(selectorOrTier);
   return {
     ...contract,
-    chain: pick(contract.chain, getChainNames(tier)),
+    chain: pick(contract.chain, chainNames),
   };
 }

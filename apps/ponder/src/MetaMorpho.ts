@@ -1,5 +1,6 @@
 import { ponder } from "ponder:registry";
 import {
+  transaction,
   vault,
   vaultBalance,
   vaultConfigItem,
@@ -7,19 +8,28 @@ import {
   vaultWithdrawQueueItem,
 } from "ponder:schema";
 import { Address, erc20Abi, Hex, zeroAddress } from "viem";
+import { metaMorphoAbi } from "~/abis/MetaMorpho";
 
 /**
- * @dev The following events are ignored:
- * - `AccrueInterest(uint256,uint256)` because `Transfer` is sufficient
- * - `Approval(address,address,uint256)` because it's not relevant to any tracked state
- * - `Deposit(address,address,uint256,uint256)` because it's not relevant to any tracked state
- * - `ReallocateSupply(address,Id,uint256,uint256)` because position relations are sufficient
- * - `ReallocateWithdraw(address,Id,uint256,uint256)1 because position relations are sufficient
- * - `Skim(address,address,uint256)` because it's not relevant to any tracked state
- * - `Withdraw(address,address,address,uint256,uint256)` because `Transfer` is sufficient
+ * @dev Event handling strategy:
  *
- * @todo Update handlers for the following events if you want to track users' balances:
- * - Transfer(address,address,uint256)
+ * Balance tracking (vaultBalance table):
+ * - `Transfer(address,address,uint256)` - SINGLE SOURCE OF TRUTH for all balance changes
+ *   - Handles mints (from=0x0): Deposit, AccrueInterest fee minting
+ *   - Handles burns (to=0x0): Withdraw
+ *   - Handles transfers (from!=0x0 && to!=0x0): User-to-user transfers, fee collection
+ *
+ * Transaction recording (transaction table):
+ * - `Deposit(address,address,uint256,uint256)` - records deposits with assets info
+ * - `Withdraw(address,address,address,uint256,uint256)` - records withdrawals with assets info
+ * - `AccrueInterest(uint256,uint256)` - records vault fee accrual
+ * - `ReallocateSupply(address,Id,uint256,uint256)` - records vault allocations
+ * - `ReallocateWithdraw(address,Id,uint256,uint256)` - records vault deallocations
+ * - `Transfer(address,address,uint256)` - records pure transfers and fee distributions
+ *
+ * @dev The following events are still ignored:
+ * - `Approval(address,address,uint256)` - not relevant to tracked state
+ * - `Skim(address,address,uint256)` - management operation
  */
 
 ponder.on("MetaMorphoFactory:CreateMetaMorpho", async ({ event, context }) => {
@@ -337,6 +347,115 @@ ponder.on("MetaMorpho:SetWithdrawQueue", async ({ event, context }) => {
                           SHARES/ASSETS
 //////////////////////////////////////////////////////////////*/
 
+ponder.on("MetaMorpho:Deposit", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
+  // Record transaction only (vaultBalance updated by Transfer event)
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: "MetaMorphoDeposit",
+    user: event.args.owner,
+    sender: event.args.sender,
+    vaultAddress: event.log.address,
+    vaultShares: event.args.shares,
+    vaultAssets: event.args.assets,
+  });
+});
+
+ponder.on("MetaMorpho:Withdraw", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
+  // Record transaction only (vaultBalance updated by Transfer event)
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: "MetaMorphoWithdraw",
+    user: event.args.owner,
+    sender: event.args.sender,
+    receiver: event.args.receiver,
+    vaultAddress: event.log.address,
+    vaultShares: event.args.shares,
+    vaultAssets: event.args.assets,
+  });
+});
+
+ponder.on("MetaMorpho:AccrueInterest", async ({ event, context }) => {
+  if (event.args.feeShares === 0n) return;
+
+  const vaultRecord = await context.db.find(vault, {
+    chainId: context.chain.id,
+    address: event.log.address,
+  });
+
+  if (!vaultRecord) return;
+
+  const feeRecipient = vaultRecord.feeRecipient;
+
+  // Calculate fee assets
+  const feeAssets = await context.client.readContract({
+    abi: metaMorphoAbi,
+    address: event.log.address,
+    functionName: "convertToAssets",
+    args: [event.args.feeShares],
+  });
+
+  // Record fee transaction
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: "MetaMorphoFee",
+    user: feeRecipient,
+    sender: zeroAddress,
+    vaultAddress: event.log.address,
+    vaultShares: event.args.feeShares,
+    vaultAssets: feeAssets,
+  });
+});
+
+ponder.on("MetaMorpho:ReallocateSupply", async ({ event, context }) => {
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: "VaultReallocateSupply",
+    user: event.args.caller,
+    sender: event.args.caller,
+    vaultAddress: event.log.address,
+    marketId: event.args.id,
+    vaultAssets: event.args.suppliedAssets,
+    vaultShares: event.args.suppliedShares,
+  });
+});
+
+ponder.on("MetaMorpho:ReallocateWithdraw", async ({ event, context }) => {
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: "VaultReallocateWithdraw",
+    user: event.args.caller,
+    sender: event.args.caller,
+    vaultAddress: event.log.address,
+    marketId: event.args.id,
+    vaultAssets: event.args.withdrawnAssets,
+    vaultShares: event.args.withdrawnShares,
+  });
+});
+
 ponder.on("MetaMorpho:Transfer", async ({ event, context }) => {
   const pk = {
     chainId: context.chain.id,
@@ -345,28 +464,80 @@ ponder.on("MetaMorpho:Transfer", async ({ event, context }) => {
 
   if (event.args.value === 0n) return;
 
+  // Handle mint (from = 0x0): Deposit or AccrueInterest
   if (event.args.from === zeroAddress) {
-    await context.db
-      .update(vault, { chainId: context.chain.id, address: event.log.address })
-      .set((row) => ({ totalSupply: row.totalSupply + event.args.value }));
-  } else {
-    // Not a mint, so we need to subtract from `from`'s balance
-    await context.db
-      .update(vaultBalance, { ...pk, user: event.args.from })
-      .set((row) => ({ shares: row.shares - event.args.value }));
+    await Promise.all([
+      // Update vault totalSupply
+      context.db
+        .update(vault, { chainId: context.chain.id, address: event.log.address })
+        .set((row) => ({ totalSupply: row.totalSupply + event.args.value })),
+      // Create or update vaultBalance for recipient
+      context.db
+        .insert(vaultBalance)
+        .values({ ...pk, user: event.args.to, shares: event.args.value })
+        .onConflictDoUpdate((row) => ({ shares: row.shares + event.args.value })),
+    ]);
+    return;
   }
 
+  // Handle burn (to = 0x0): Withdraw
   if (event.args.to === zeroAddress) {
-    await context.db
-      .update(vault, { chainId: context.chain.id, address: event.log.address })
-      .set((row) => ({ totalSupply: row.totalSupply - event.args.value }));
-  } else {
-    // Not a burn, so we need to add to `to`'s balance
-    await context.db
+    await Promise.all([
+      // Update vault totalSupply
+      context.db
+        .update(vault, { chainId: context.chain.id, address: event.log.address })
+        .set((row) => ({ totalSupply: row.totalSupply - event.args.value })),
+      // Update vaultBalance for sender
+      context.db
+        .update(vaultBalance, { ...pk, user: event.args.from })
+        .set((row) => ({ shares: row.shares - event.args.value })),
+    ]);
+    return;
+  }
+
+  // Handle pure Transfer (from != 0 && to != 0)
+  await Promise.all([
+    // Update from balance
+    context.db
+      .update(vaultBalance, { ...pk, user: event.args.from })
+      .set((row) => ({ shares: row.shares - event.args.value })),
+    // Update to balance
+    context.db
       .insert(vaultBalance)
       .values({ ...pk, user: event.args.to, shares: event.args.value })
-      .onConflictDoUpdate((row) => ({ shares: row.shares + event.args.value }));
-  }
+      .onConflictDoUpdate((row) => ({ shares: row.shares + event.args.value })),
+  ]);
+
+  // Check if this is a fee transfer
+  const vaultRecord = await context.db.find(vault, {
+    chainId: context.chain.id,
+    address: event.log.address,
+  });
+  const isFee = vaultRecord && event.args.to === vaultRecord.feeRecipient;
+
+  // Calculate assets
+  const assets = await context.client.readContract({
+    abi: metaMorphoAbi,
+    address: event.log.address,
+    functionName: "convertToAssets",
+    args: [event.args.value],
+  });
+
+  // Record transaction for pure transfers only
+  await context.db.insert(transaction).values({
+    chainId: context.chain.id,
+    hash: event.transaction.hash,
+    logIndex: event.log.logIndex,
+    blockNumber: event.block.number,
+    timestamp: event.block.timestamp,
+    type: isFee ? "MetaMorphoFee" : "MetaMorphoTransfer",
+    user: event.args.from,
+    sender: event.args.from,
+    receiver: event.args.to,
+    vaultAddress: event.log.address,
+    vaultShares: event.args.value,
+    vaultAssets: assets,
+  });
 });
 
 ponder.on("MetaMorpho:UpdateLastTotalAssets", async ({ event, context }) => {

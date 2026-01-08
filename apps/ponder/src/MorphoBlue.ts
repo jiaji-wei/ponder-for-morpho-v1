@@ -1,5 +1,5 @@
 import { ponder } from "ponder:registry";
-import { authorization, market, position } from "ponder:schema";
+import { authorization, market, position, transaction } from "ponder:schema";
 
 /**
  * @dev The following events are ignored:
@@ -47,6 +47,8 @@ ponder.on("Morpho:AccrueInterest", async ({ event, context }) => {
 });
 
 ponder.on("Morpho:Supply", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
   await Promise.all([
     // Row must exist because `Supply` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set((row) => ({
@@ -68,10 +70,26 @@ ponder.on("Morpho:Supply", async ({ event, context }) => {
       .onConflictDoUpdate((row) => ({
         supplyShares: row.supplyShares + event.args.shares,
       })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketSupply",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      marketId: event.args.id,
+      marketShares: event.args.shares,
+      marketAssets: event.args.assets,
+    }),
   ]);
 });
 
 ponder.on("Morpho:Withdraw", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
   await Promise.all([
     // Row must exist because `Withdraw` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set((row) => ({
@@ -87,10 +105,27 @@ ponder.on("Morpho:Withdraw", async ({ event, context }) => {
         user: event.args.onBehalf,
       })
       .set((row) => ({ supplyShares: row.supplyShares - event.args.shares })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketWithdraw",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      receiver: event.args.receiver,
+      marketId: event.args.id,
+      marketShares: event.args.shares,
+      marketAssets: event.args.assets,
+    }),
   ]);
 });
 
 ponder.on("Morpho:SupplyCollateral", async ({ event, context }) => {
+  if (event.args.assets === 0n) return;
+
   await Promise.all([
     // Row must exist because `SupplyCollateral` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set(() => ({
@@ -110,27 +145,58 @@ ponder.on("Morpho:SupplyCollateral", async ({ event, context }) => {
       .onConflictDoUpdate((row) => ({
         collateral: row.collateral + event.args.assets,
       })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketSupplyCollateral",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      marketId: event.args.id,
+      collateralAssets: event.args.assets,
+    }),
   ]);
 });
 
 ponder.on("Morpho:WithdrawCollateral", async ({ event, context }) => {
+  if (event.args.assets === 0n) return;
+
   await Promise.all([
     // Row must exist because `WithdrawCollateral` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set(() => ({
       lastUpdate: event.block.timestamp,
     })),
     // Row must exist because `WithdrawCollateral` cannot preceed `SupplyCollateral`.
-    await context.db
+    context.db
       .update(position, {
         chainId: context.chain.id,
         marketId: event.args.id,
         user: event.args.onBehalf,
       })
       .set((row) => ({ collateral: row.collateral - event.args.assets })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketWithdrawCollateral",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      receiver: event.args.receiver,
+      marketId: event.args.id,
+      collateralAssets: event.args.assets,
+    }),
   ]);
 });
 
 ponder.on("Morpho:Borrow", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
   await Promise.all([
     // Row must exist because `Borrow` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set((row) => ({
@@ -146,10 +212,27 @@ ponder.on("Morpho:Borrow", async ({ event, context }) => {
         user: event.args.onBehalf,
       })
       .set((row) => ({ borrowShares: row.borrowShares + event.args.shares })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketBorrow",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      receiver: event.args.receiver,
+      marketId: event.args.id,
+      marketShares: event.args.shares,
+      marketAssets: event.args.assets,
+    }),
   ]);
 });
 
 ponder.on("Morpho:Repay", async ({ event, context }) => {
+  if (event.args.shares === 0n) return;
+
   await Promise.all([
     // Row must exist because `Repay` cannot preceed `CreateMarket`.
     context.db.update(market, { chainId: context.chain.id, id: event.args.id }).set((row) => ({
@@ -165,6 +248,20 @@ ponder.on("Morpho:Repay", async ({ event, context }) => {
         user: event.args.onBehalf,
       })
       .set((row) => ({ borrowShares: row.borrowShares - event.args.shares })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketRepay",
+      user: event.args.onBehalf,
+      sender: event.args.caller,
+      marketId: event.args.id,
+      marketShares: event.args.shares,
+      marketAssets: event.args.assets,
+    }),
   ]);
 });
 
@@ -189,6 +286,24 @@ ponder.on("Morpho:Liquidate", async ({ event, context }) => {
         collateral: row.collateral - event.args.seizedAssets,
         borrowShares: row.borrowShares - event.args.repaidShares - event.args.badDebtShares,
       })),
+    // Record transaction
+    context.db.insert(transaction).values({
+      chainId: context.chain.id,
+      hash: event.transaction.hash,
+      logIndex: event.log.logIndex,
+      blockNumber: event.block.number,
+      timestamp: event.block.timestamp,
+      type: "MarketLiquidation",
+      user: event.args.borrower,
+      sender: event.args.caller,
+      liquidator: event.args.caller,
+      marketId: event.args.id,
+      repaidAssets: event.args.repaidAssets,
+      repaidShares: event.args.repaidShares,
+      seizedAssets: event.args.seizedAssets,
+      badDebtAssets: event.args.badDebtAssets,
+      badDebtShares: event.args.badDebtShares,
+    }),
   ]);
 });
 

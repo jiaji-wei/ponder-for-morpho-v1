@@ -256,7 +256,74 @@ export const vaultWithdrawQueueItem = vaultQueueItem("vault_withdraw_queue_item"
 export const vaultWithdrawQueueItemRelations = vaultQueueItemRelations(vaultWithdrawQueueItem);
 
 /*//////////////////////////////////////////////////////////////
-                           [HELPERS]
+                           TRANSACTIONS
+//////////////////////////////////////////////////////////////*/
+
+export const transaction = onchainTable(
+  "transaction",
+  (t) => ({
+    // Primary key & metadata
+    chainId: t.integer().notNull(),
+    hash: t.hex().notNull(),
+    logIndex: t.integer().notNull(),
+    blockNumber: t.bigint().notNull(),
+    timestamp: t.bigint().notNull(),
+
+    // Common fields
+    type: t.text().notNull(),
+    user: t.hex().notNull(),
+    sender: t.hex(),
+    receiver: t.hex(),
+
+    // Reference fields
+    marketId: t.hex(),
+    vaultAddress: t.hex(),
+
+    // VaultTransactionData fields
+    vaultShares: t.bigint(),
+    vaultAssets: t.bigint(),
+
+    // MarketTransferTransactionData fields
+    marketShares: t.bigint(),
+    marketAssets: t.bigint(),
+
+    // MarketCollateralTransferTransactionData fields
+    collateralAssets: t.bigint(),
+
+    // MarketLiquidationTransactionData fields
+    liquidator: t.hex(),
+    repaidAssets: t.bigint(),
+    repaidShares: t.bigint(),
+    seizedAssets: t.bigint(),
+    badDebtAssets: t.bigint(),
+    badDebtShares: t.bigint(),
+  }),
+  (table) => ({
+    pk: primaryKey({ columns: [table.chainId, table.hash, table.logIndex] }),
+    userIdx: index().on(table.user),
+    senderIdx: index().on(table.sender),
+    chainUserIdx: index().on(table.chainId, table.user),
+    marketIdx: index().on(table.chainId, table.marketId),
+    vaultIdx: index().on(table.chainId, table.vaultAddress),
+    timestampIdx: index().on(table.timestamp),
+    typeIdx: index().on(table.type),
+    typeTimestampIdx: index().on(table.type, table.timestamp),
+  }),
+);
+
+export const transactionRelations = relations(transaction, ({ one }) => ({
+  market: one(market, {
+    fields: [transaction.chainId, transaction.marketId],
+    references: [market.chainId, market.id],
+  }),
+  vault: one(vault, {
+    fields: [transaction.chainId, transaction.vaultAddress],
+    references: [vault.chainId, vault.address],
+  }),
+}));
+
+/*//////////////////////////////////////////////////////////////
+                            [HELPERS]
 //////////////////////////////////////////////////////////////*/
 
 function vaultQueueItem<name extends string>(name: name extends "" ? never : name) {
